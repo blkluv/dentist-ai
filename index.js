@@ -107,24 +107,75 @@ server.listen(PORT, () => console.log("HTTP+WS server on", PORT));
 
 async function startRealtimeSession() {
   // Start a short-lived session; use the realtime model name enabled in your account
-  const r = await fetch("https://api.openai.com/v1/realtime/sessions", {
-    method: "POST",
-    headers: { "Authorization": `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "gpt-4o-realtime-preview",  // if this 404s, check your OpenAI dashboard for the exact realtime model name
-      voice: "alloy",
-      input_audio_format: "g711_ulaw",   // match Twilio
-      output_audio_format: "g711_ulaw",
-      turn_detection: { type: "server_vad", threshold: 0.7 },
-      instructions: SYSTEM_PROMPT,
-      tools: [
-        { name: "getFAQ",   description: "Answer basic FAQ", parameters: { type: "object", properties: { question: { type: "string" }}, required: ["question"] } },
-        { name: "getSlots", description: "List appointment slots", parameters: { type: "object", properties: { date: { type: "string" }, provider: { type: "string" }, window: { type: "string" } } } },
-        { name: "bookSlot", description: "Book a slot", parameters: { type: "object", properties: { slotId: { type: "string" }, name: { type: "string" }, phone: { type: "string" }, reason: { type: "string" } }, required: ["slotId","name","phone"] } },
-        { name: "sendSMS",  description: "Send an SMS", parameters: { type: "object", properties: { to: { type: "string" }, message: { type: "string" } }, required: ["to","message"] } }
-      ]
-    })
-  });
+const r = await fetch("https://api.openai.com/v1/realtime/sessions", {
+  method: "POST",
+  headers: {
+    "Authorization": `Bearer ${OPENAI_API_KEY}`,
+    "Content-Type": "application/json"
+  },
+  body: JSON.stringify({
+    model: "gpt-4o-realtime-preview",   // use a realtime model enabled in your acct
+    voice: "alloy",
+    input_audio_format: "g711_ulaw",
+    output_audio_format: "g711_ulaw",
+    turn_detection: { type: "server_vad", threshold: 0.7 },
+    instructions: SYSTEM_PROMPT,
+    tools: [
+      {
+        type: "function",
+        name: "getFAQ",
+        description: "Answer basic FAQ",
+        parameters: {
+          type: "object",
+          properties: { question: { type: "string" } },
+          required: ["question"]
+        }
+      },
+      {
+        type: "function",
+        name: "getSlots",
+        description: "List appointment slots",
+        parameters: {
+          type: "object",
+          properties: {
+            date: { type: "string" },
+            provider: { type: "string" },
+            window: { type: "string" }
+          }
+        }
+      },
+      {
+        type: "function",
+        name: "bookSlot",
+        description: "Book a slot",
+        parameters: {
+          type: "object",
+          properties: {
+            slotId: { type: "string" },
+            name:   { type: "string" },
+            phone:  { type: "string" },
+            reason: { type: "string" }
+          },
+          required: ["slotId", "name", "phone"]
+        }
+      },
+      {
+        type: "function",
+        name: "sendSMS",
+        description: "Send an SMS via Twilio",
+        parameters: {
+          type: "object",
+          properties: {
+            to: { type: "string" },
+            message: { type: "string" }
+          },
+          required: ["to", "message"]
+        }
+      }
+    ]
+  })
+});
+
   if (!r.ok) throw new Error(await r.text());
   return r.json(); // contains client_secret.value
 }
