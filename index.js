@@ -86,7 +86,7 @@ app.post("/voice", (req, res) => {
   <Connect>
     <Stream url="wss://${host}/twilio-media" track="both_audio" name="receptionist"/>
   </Connect>
-</Response>;
+</Response>`;
   res.type("text/xml").send(twiml);
 });
 
