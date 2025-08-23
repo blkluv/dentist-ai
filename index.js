@@ -82,13 +82,11 @@ app.post("/voice", (req, res) => {
   const host = req.headers["x-forwarded-host"] || req.headers.host;
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Gather input="dtmf" timeout="0" numDigits="1" action="/dtmf">
-    <Say>Thanks for calling Smile Dental. One moment while I connect you.</Say>
-    <Connect>
-      <Stream url="wss://${host}/twilio-media" track="both_audio" name="receptionist"/>
-    </Connect>
-  </Gather>
-</Response>`;
+  <Say>Thanks for calling Smile Dental. One moment while I connect you.</Say>
+  <Connect>
+    <Stream url="wss://${host}/twilio-media" track="both_audio" name="receptionist"/>
+  </Connect>
+</Response>;
   res.type("text/xml").send(twiml);
 });
 
