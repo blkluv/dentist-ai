@@ -84,9 +84,7 @@ app.post("/voice", (req, res) => {
 <Response>
   <Say>Thanks for calling Smile Dental. One moment while I connect you.</Say>
   <Connect>
-    <Stream url="wss://${host}/twilio-media"
-            name="receptionist"
-            track="both_tracks" />
+    <Stream url="wss://${host}/twilio-media" name="receptionist"/>
   </Connect>
 </Response>`;
   res.type("text/xml").send(twiml);
