@@ -11,15 +11,15 @@ const PORT = process.env.PORT || 3000;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const TWILIO_NUMBER = process.env.TWILIO_NUMBER;          // +1XXXXXXXXXX
 const FRONT_DESK_NUMBER = process.env.FRONT_DESK_NUMBER;  // +1YYYYYYYYYY
-const RENDER_HOST = process.env.RENDER_HOST || "dentist-ai.onrender.com"; // set to your Render host (no protocol)
+const RENDER_HOST =
+  (process.env.RENDER_HOST || "").trim() || "dentist-ai.onrender.com"; // no protocol
 
 // ---------- EXPRESS ----------
 const app = express();
-// Twilio posts urlencoded webhook bodies by default
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
-// Simple health check
+// Health check
 app.get("/", (_req, res) => res.status(200).send("Dentist AI is alive"));
 
 // ---------- In-house "KB" & demo slots ----------
@@ -60,10 +60,11 @@ async function handleToolCall(name, args) {
   }
   if (name === "getSlots") return { slots: SLOTS };
   if (name === "bookSlot") {
-    const found = SLOTS.find(s => s.id === args.slotId);
+    const found = SLOTS.find((s) => s.id === args.slotId);
     if (!found) return { ok: false, error: "Slot not found" };
-    // TODO: replace with Google Calendar create-event
-    if (args.phone) await sendSMS(args.phone, `Booked: ${found.label}. Address: ${FAQ.address}`);
+    if (args.phone) {
+      await sendSMS(args.phone, `Booked: ${found.label}. Address: ${FAQ.address}`);
+    }
     return { ok: true, booked: found };
   }
   if (name === "sendSMS") {
@@ -87,39 +88,35 @@ Keep replies concise and polite.
 
 // ---------- Twilio Voice webhook: returns TwiML to open Media Stream ----------
 app.post("/voice", (req, res) => {
-  // Defensive: if the brain is not configured, route to human immediately
   if (!OPENAI_API_KEY) {
     console.error("Missing OPENAI_API_KEY — dialing front desk fallback.");
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?><Response><Say>Connecting you to our front desk.</Say><Dial>${FRONT_DESK_NUMBER}</Dial></Response>`;
-    return res.type("text/xml").send(twiml);
+    const fallback = `<?xml version="1.0" encoding="UTF-8"?>
+<Response><Say>Connecting you to our front desk.</Say><Dial>${FRONT_DESK_NUMBER}</Dial></Response>`;
+    return res.type("text/xml").send(fallback);
   }
 
-  // Use a stable host (avoid surprises from proxies)
   const host = RENDER_HOST || req.headers["x-forwarded-host"] || req.headers.host;
   console.log("VOICE webhook hit. host =", host);
 
+  // Minimal, schema-valid TwiML (no unsupported attributes on <Stream>)
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say>Thanks for calling Smile Dental. One moment while I connect you.</Say>
   <Connect>
-    <Stream
-      url="wss://${host}/twilio-media"
-      name="receptionist"
-      statusCallback="https://${host}/stream-status"
-      statusCallbackMethod="POST"
-      statusCallbackEvent="start completed failed"/>
+    <Stream url="wss://${host}/twilio-media" name="receptionist"/>
   </Connect>
 </Response>`;
   res.type("text/xml").send(twiml);
 });
 
-// Optional: allow external digits routing later if you want
+// Optional: DTMF to front desk
 app.post("/dtmf", (_req, res) => {
-  const twiml = `<?xml version="1.0" encoding="UTF-8"?><Response><Dial>${FRONT_DESK_NUMBER}</Dial></Response>`;
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response><Dial>${FRONT_DESK_NUMBER}</Dial></Response>`;
   res.type("text/xml").send(twiml);
 });
 
-// Twilio stream status callback (diagnostics)
+// (We keep this route even if TwiML doesn't reference it yet)
 app.post("/stream-status", (req, res) => {
   console.log("STREAM STATUS:", req.body);
   res.sendStatus(200);
@@ -141,8 +138,8 @@ server.listen(PORT, () => console.log("HTTP+WS server on", PORT));
 
 // ---------- OpenAI Realtime session helper ----------
 async function startRealtimeSession() {
-  const payload = {
-    model: "gpt-4o-realtime-preview",     // use a realtime-capable model available to your account
+  const body = {
+    model: "gpt-4o-realtime-preview",
     voice: "alloy",
     input_audio_format: "g711_ulaw",
     output_audio_format: "g711_ulaw",
@@ -180,8 +177,8 @@ async function startRealtimeSession() {
           type: "object",
           properties: {
             slotId: { type: "string" },
-            name:   { type: "string" },
-            phone:  { type: "string" },
+            name: { type: "string" },
+            phone: { type: "string" },
             reason: { type: "string" }
           },
           required: ["slotId", "name", "phone"]
@@ -205,21 +202,25 @@ async function startRealtimeSession() {
 
   const r = await fetch("https://api.openai.com/v1/realtime/sessions", {
     method: "POST",
-    headers: { "Authorization": `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
+    headers: {
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
   });
+
   if (!r.ok) {
     const text = await r.text();
     throw new Error(text);
   }
-  return r.json(); // contains client_secret.value for the WS connect header
+  return r.json(); // has client_secret.value
 }
 
 // ---------- Twilio Media Streams <-> OpenAI Realtime bridge ----------
 async function handleTwilioMedia(ws) {
   console.log("Twilio media stream CONNECTED");
 
-  // --- Twilio WS keep-alive (PING every 15s) ---
+  // Twilio WS keep-alive
   const twilioPing = setInterval(() => {
     try { ws.ping?.(); } catch {}
   }, 15000);
@@ -227,101 +228,105 @@ async function handleTwilioMedia(ws) {
   ws.on("error", (e) => console.error("Twilio media stream ERROR:", e));
   ws.on("close", (code, reason) => {
     console.log("Twilio media stream CLOSED:", code, reason?.toString());
-    clearInterval(twilioPing);         // <— clear Twilio keep-alive
-    try { rt?.close(); } catch {}       // <— close model socket if still open
+    clearInterval(twilioPing);
+    try { rt?.close(); } catch {}
   });
 
   if (!OPENAI_API_KEY) { try { ws.close(); } catch {}; return; }
 
-  // --- Create OpenAI Realtime WS ---
-  const session = await startRealtimeSession();
-  const { WebSocket } = await import("ws");
-  const rt = new WebSocket(
-    "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview",
-    { headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-        "OpenAI-Beta": `realtime-session=${session.client_secret.value}`
-    }}
-  );
-
-  // --- OpenAI WS keep-alive (PING every 15s) ---
-  const rtPing = setInterval(() => {
-    try { if (rt.readyState === 1) rt.ping?.(); } catch {}
-  }, 15000);
-
-  rt.on("close", () => {
-    clearInterval(rtPing);             // <— clear OpenAI keep-alive
-    try { ws.close(); } catch {}
-  });
-
-  rt.on("open", () => {
-    console.log("OpenAI Realtime connected");
-    rt.send(JSON.stringify({
-      type: "response.create",
-      response: {
-        modalities: ["audio"],
-        instructions:
-          "You are Smile Dental's receptionist. Greet the caller briefly and ask how you can help."
+  // Create OpenAI realtime WS
+  let rt;
+  try {
+    const session = await startRealtimeSession();
+    const { WebSocket } = await import("ws");
+    rt = new WebSocket(
+      "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview",
+      {
+        headers: {
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+          "OpenAI-Beta": `realtime-session=${session.client_secret.value}`
+        }
       }
-    }));
-  });
-
-  // ... (rt.on('message') and ws.on('message') handlers stay as you have them) ...
-}
-
-    rt.on("error", (e) => console.error("Realtime error", e));
-    rt.on("close", () => {
-      try { ws.close(); } catch {}
-    });
-
-    // Model -> Twilio (audio) and tool calls
-rt.on("message", async (buf) => {
-  let evt;
-  try { evt = JSON.parse(buf.toString()); } catch { return; }
-
-  // TEMP: verbose logging to diagnose early hangups
-  if (evt.type && evt.type !== "audio.delta") console.log("RT EVT:", evt.type, JSON.stringify(evt).slice(0, 400));
-
-  if (evt.type === "error") {
-    console.error("RT ERROR:", evt);
-  }
-
-  if (evt.type === "audio.delta") {
-    // forward audio to the caller
-    ws.send(JSON.stringify({ event: "media", media: { payload: evt.audio } }));
-  } else if (evt.type === "response.function_call") {
-    const { name, arguments: args, call_id } = evt;
-    try {
-      const result = await handleToolCall(name, args || {});
-      rt.send(JSON.stringify({ type: "response.function_call_output", call_id, output: JSON.stringify(result) }));
-    } catch (e) {
-      console.error("tool handler error:", e);
-    }
-  }
-});
-
+    );
   } catch (e) {
     console.error("Failed to start Realtime:", e.message || e);
     try { ws.close(); } catch {}
     return;
   }
 
-  // Twilio -> Model (caller audio frames)
- ws.on("message", (buf) => {
-  try {
-    const msg = JSON.parse(buf.toString());
-    if (msg.event === "start") {
-      console.log("Twilio START:", msg.start?.callSid);
-    } else if (msg.event === "media") {
-      if (rt && rt.readyState === 1) {
-        rt.send(JSON.stringify({ type: "input_audio_buffer.append", audio: msg.media.payload }));
+  // OpenAI WS keep-alive
+  const rtPing = setInterval(() => {
+    try { if (rt.readyState === 1) rt.ping?.(); } catch {}
+  }, 15000);
+
+  rt.on("close", () => {
+    clearInterval(rtPing);
+    try { ws.close(); } catch {}
+  });
+
+  rt.on("error", (e) => console.error("Realtime error", e));
+
+  rt.on("open", () => {
+    console.log("OpenAI Realtime connected");
+    // Proactive greeting so caller hears audio immediately
+    rt.send(JSON.stringify({
+      type: "response.create",
+      response: {
+        modalities: ["audio"],
+        instructions:
+          "You are Smile Dental's receptionist. Greet the caller briefly and ask how you can help (hours, address, insurance, booking)."
       }
-    } else if (msg.event === "stop") {
-      console.log("Twilio STOP");
-      if (rt && rt.readyState === 1) {
-        rt.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-        rt.send(JSON.stringify({ type: "response.create" })); // model replies
+    }));
+  });
+
+  // Model -> Twilio (audio + tools)
+  rt.on("message", async (buf) => {
+    let evt;
+    try { evt = JSON.parse(buf.toString()); } catch { return; }
+
+    if (evt.type && evt.type !== "audio.delta") {
+      console.log("RT EVT:", evt.type, JSON.stringify(evt).slice(0, 400));
+    }
+    if (evt.type === "error") {
+      console.error("RT ERROR:", evt);
+    }
+    if (evt.type === "audio.delta") {
+      ws.send(JSON.stringify({ event: "media", media: { payload: evt.audio } }));
+    } else if (evt.type === "response.function_call") {
+      const { name, arguments: args, call_id } = evt;
+      try {
+        const result = await handleToolCall(name, args || {});
+        rt.send(JSON.stringify({
+          type: "response.function_call_output",
+          call_id,
+          output: JSON.stringify(result)
+        }));
+      } catch (e) {
+        console.error("tool handler error:", e);
       }
     }
-  } catch {}
-});
+  });
+
+  // Twilio -> Model (caller audio frames)
+  ws.on("message", (buf) => {
+    try {
+      const msg = JSON.parse(buf.toString());
+      if (msg.event === "start") {
+        console.log("Twilio START:", msg.start?.callSid);
+      } else if (msg.event === "media") {
+        if (rt && rt.readyState === 1) {
+          rt.send(JSON.stringify({
+            type: "input_audio_buffer.append",
+            audio: msg.media.payload
+          }));
+        }
+      } else if (msg.event === "stop") {
+        console.log("Twilio STOP");
+        if (rt && rt.readyState === 1) {
+          rt.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+          rt.send(JSON.stringify({ type: "response.create" })); // ask model to reply
+        }
+      }
+    } catch {}
+  });
+}
